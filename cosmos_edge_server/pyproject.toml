@@ -1,0 +1,25 @@
+[project]
+name = "cosmos-edge-server"
+version = "0.1.0"
+requires-python = ">=3.11"
+# HTTP shell only. A model that installs from PyPI adds its packages here.
+# A model that ships as an upstream repo with its own lockfile does NOT go
+# here: set UPSTREAM_REPO in scripts/setup_env.sh and these shell packages are
+# layered onto upstream's environment instead.
+dependencies = [
+    "numpy",
+    "pillow",
+    "pydantic-settings",
+    "fastapi",
+    "uvicorn[standard]",
+    "slowapi",
+    "python-multipart",
+    "httpx",
+]
+
+[dependency-groups]
+dev = ["pytest"]
+
+[tool.pytest.ini_options]
+pythonpath = ["."]
+testpaths = ["tests"]

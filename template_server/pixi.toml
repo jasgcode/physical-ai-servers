@@ -1,0 +1,29 @@
+[workspace]
+name = "template-server"
+channels = ["conda-forge"]
+platforms = ["linux-64"]
+
+[dependencies]
+uv = "*"
+git = "*"
+git-lfs = "*"
+curl = "*"
+jq = "*"
+openssl = "*"
+
+[activation.env]
+# Applies to every `pixi run` entrypoint. Keeps the HF cache under the project
+# allocation — never $HOME on a cluster with small home quotas.
+HF_HOME = "$PIXI_PROJECT_ROOT/weights/.cache"
+
+[tasks]
+# Tasks call .venv/bin/python directly, never `uv run`: when setup_env.sh uses
+# an upstream checkout, .venv is a symlink into that checkout and `uv run`
+# would re-sync it against this pyproject and strip the model's packages.
+setup = "bash scripts/setup_env.sh"
+keys = "bash scripts/gen_keys.sh"
+test = ".venv/bin/python -m pytest"
+serve = "bash -c '.venv/bin/python -m uvicorn server.main:app --host 127.0.0.1 --port \"${TEMPLATE_PORT:-8000}\"'"
+smoke = ".venv/bin/python -m scripts.smoke_client"
+launch = "bash scripts/launch.sh"
+establish = "bash scripts/establish_server.sh"

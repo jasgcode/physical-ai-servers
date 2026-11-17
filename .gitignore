@@ -1,0 +1,28 @@
+# ---- secrets (never commit) ----
+# Each *_server reads its own .env; .env.example IS tracked.
+.env
+
+# ---- upstream checkouts (re-cloned at a pinned commit by scripts/setup_env.sh) ----
+vendor/
+
+# ---- resolved environments (large, machine-specific) ----
+# pixi.lock / uv.lock ARE tracked — they are the repro record.
+.pixi/
+.venv
+
+# ---- runtime output ----
+logs/
+outputs/
+weights/
+
+# ---- python build/test artifacts ----
+__pycache__/
+*.pyc
+*.egg-info/
+.pytest_cache/
+.ruff_cache/
+
+# ---- local agent tooling scratch ----
+.superpowers/
+.remember/
+.claude/
