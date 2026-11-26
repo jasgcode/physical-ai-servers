@@ -2,6 +2,7 @@
 (tests/conftest.py). Never imports torch or gr00t."""
 
 import asyncio
+import threading
 
 import numpy as np
 import pytest
@@ -73,3 +74,26 @@ def test_missing_modality_fails_loud(policy, monkeypatch):
 def test_reset_reaches_upstream(policy):
     asyncio.run(inference.reset())
     assert policy.resets == 1
+
+
+def test_warmup_and_requests_run_on_one_gpu_thread(policy, monkeypatch):
+    seen = []
+    real = inference._predict_sync
+
+    def recording(obs):
+        seen.append(threading.get_ident())
+        return real(obs)
+
+    monkeypatch.setattr(inference, "_predict_sync", recording)
+
+    async def serve():
+        await inference.on_gpu_thread(inference.warmup)
+        for _ in range(3):
+            # Keep the default pool busy, the way parallel image decode does.
+            await asyncio.gather(*(asyncio.to_thread(threading.get_ident) for _ in range(4)))
+            await inference.predict(_obs())
+
+    asyncio.run(serve())
+    assert len(seen) >= 4
+    assert len(set(seen)) == 1
+    assert seen[0] != threading.get_ident()

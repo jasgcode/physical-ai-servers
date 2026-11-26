@@ -22,9 +22,11 @@ async def generations(request: Request) -> ActionResponse:
     policy, so the form is parsed against inference.spec() instead of being
     declared as fixed FastAPI parameters."""
     spec = inference.spec()
+    received = time.perf_counter()
     obs = await parse_observation(
         await request.form(), spec, settings.max_image_mb * 1024 * 1024
     )
+    parsed = time.perf_counter()
 
     try:
         actions, timing = await inference.predict(obs)
@@ -45,7 +47,10 @@ async def generations(request: Request) -> ActionResponse:
         embodiment=spec.embodiment,
         action_horizon=spec.action_horizon,
         actions=out,
-        timing_ms=timing,
+        # parse = multipart read + image decode + validation, i.e. the shell's
+        # own cost per request, reported next to the model's so a slow loop
+        # can be attributed without a profiler.
+        timing_ms={"parse": (parsed - received) * 1000.0, **timing},
     )
 
 

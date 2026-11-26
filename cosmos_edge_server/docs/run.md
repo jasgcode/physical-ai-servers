@@ -30,12 +30,51 @@ pick a URL; there is no load balancer.
 
 Cosmos 3 Edge jointly denoises a short video rollout and a 32-step action
 chunk (8 values per step: 7 joints + gripper) for the DROID platform. This
-server returns the actions only. Expect roughly a second per call on an H100
-(upstream reports 1.25 s for a 16-step chunk); the chunk covers ~2.1 s at
-15 Hz, so re-plan about once a second and execute the chunk in between.
-`COSMOS_EDGE_NUM_STEPS` trades quality for latency.
+server returns the actions only. The chunk covers ~2.1 s at 15 Hz: execute a
+prefix, re-plan with a fresh observation.
 
 Pick the GPU with `CUDA_VISIBLE_DEVICES`; upstream has no device argument.
+
+## Latency
+
+Measured on one RTX 5090 (32 GB), bf16 weights, **nothing quantized**, three
+640x480 JPEG frames per request. "In-process" is `predict` alone; HTTP is the
+smoke client on localhost over one kept-alive connection.
+
+Same model output (the defaults):
+
+| Configuration | Per call |
+|---|---|
+| Upstream RoboLab server defaults (4 steps, guidance on every step, `torch.compile`) | 634 ms |
+| + `COSMOS_EDGE_GUIDANCE_INTERVAL=960,1001` (upstream's Edge recipe: 5 forwards instead of 8) | 431 ms |
+| + `COSMOS_EDGE_GPU_PREPROCESS=true` (resize / pad / normalize on GPU) — **default** | **396 ms** |
+| Default over HTTP, 100 requests | p50 400 ms, p90 406 ms, max 419 ms |
+| Default with `COSMOS_EDGE_USE_TORCH_COMPILE=false` (before GPU preprocess) | 507 ms |
+
+Where the 396 ms goes: five transformer forwards at ~71 ms each (~360 ms),
+VAE encode of the conditioning frame ~15 ms, the rest is preprocessing and
+the action decode. HTTP parsing of the three frames is ~3 ms.
+
+Opt-in — these change what the model computes. They were timed, **not
+evaluated**: nothing here says the actions are still good. Run the RoboLab
+eval before using any of them on a robot.
+
+| Setting (on top of the default) | Per call |
+|---|---|
+| `COSMOS_EDGE_NUM_STEPS=3` | ~360 ms |
+| `COSMOS_EDGE_ACTION_CHUNK_SIZE=16` (half the horizon) | ~240 ms |
+| `COSMOS_EDGE_RESOLUTION=256` + `IMAGE_HEIGHT=270` + `IMAGE_WIDTH=320` | 120 ms |
+| ... + `COSMOS_EDGE_GUIDANCE=1.0` | 96 ms |
+| ... + `COSMOS_EDGE_NUM_STEPS=3` | 76 ms |
+
+Tried and left off, with the reason: `USE_CUDA_GRAPHS` (fails during capture
+on this checkpoint), `PREFILL_TEXT_KV` (rejected: per-generation text-K
+normalization), `BATCHED_CFG` (460 ms vs 431 ms), `COMPILE_DYNAMIC=false`
+(435 ms vs 431 ms).
+
+Startup takes a few minutes: `torch.compile` traces during the three warmup
+calls. `/health` answers only afterwards, so the first real request is
+already at steady state.
 
 ## Calling it
 

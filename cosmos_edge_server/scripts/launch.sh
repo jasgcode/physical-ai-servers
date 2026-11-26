@@ -65,6 +65,13 @@ trap 'cleanup; exit 130' INT TERM
 for ((i=0; i<REPLICAS; i++)); do
     rport=$((PORT + i))
     log="logs/uvicorn-r$((i + 1)).log"
+    # The readiness loop below polls /health on this port. If a previous server
+    # is still bound to it, the new process fails to bind while the old one
+    # answers, and a stale model would be reported as freshly started.
+    if curl -fsS "http://127.0.0.1:$rport/health" >/dev/null 2>&1; then
+        echo "[launch] ERROR: something already serves 127.0.0.1:$rport — stop it or set COSMOS_EDGE_PORT"
+        exit 1
+    fi
     echo "[launch] replica $((i + 1))/$REPLICAS on 127.0.0.1:$rport (log: $log)"
     if [ "$REPLICAS" -gt 1 ]; then
         CUDA_VISIBLE_DEVICES="${GPUS[$i]}" COSMOS_EDGE_PORT="$rport" \

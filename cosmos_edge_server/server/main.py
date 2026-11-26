@@ -1,4 +1,3 @@
-import asyncio
 import logging
 from contextlib import asynccontextmanager
 
@@ -23,12 +22,13 @@ log = logging.getLogger("cosmos_edge_server")
 async def lifespan(app: FastAPI):
     log.info("auth=%s, %d API key(s) loaded, rate_limit=%s",
              settings.require_auth, len(settings.api_key_list), settings.rate_limit)
-    # Loading weights synchronously would block the event loop, so it is
-    # offloaded to a worker thread. /health only answers once this returns,
-    # which is what scripts/launch.sh waits on.
-    await asyncio.to_thread(inference.init_policy)
+    # Loading weights synchronously would block the event loop, so it runs
+    # off-loop — on the same thread that later serves requests, or warmup
+    # warms a thread no request ever uses. /health only answers once this
+    # returns, which is what scripts/launch.sh waits on.
+    await inference.on_gpu_thread(inference.init_policy)
     log.info("policy loaded, running warmup...")
-    await asyncio.to_thread(inference.warmup)
+    await inference.on_gpu_thread(inference.warmup)
     log.info("warmup done, ready to serve: %s", inference.spec().model_dump())
     yield
     log.info("shutting down, releasing GPU")

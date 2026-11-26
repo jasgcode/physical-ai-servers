@@ -49,6 +49,7 @@ def test_valid_request_returns_one_chunk_per_action_key(client):
             assert chunk.shape[1] == dim
         assert np.isfinite(chunk).all()
     assert body["timing_ms"]["inference"] >= 0
+    assert body["timing_ms"]["parse"] >= 0
 
 
 def test_missing_camera_is_400(client):

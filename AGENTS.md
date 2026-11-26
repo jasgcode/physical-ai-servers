@@ -21,12 +21,12 @@ stamped from it with `bash scripts/new_server.sh <name>`.
 | Discovery | `/v1/models` carries the policy's `PolicySpec`: cameras, state keys and widths, action keys and widths, horizons. Clients build requests from it. |
 | Response | `actions.<key>` = `action_horizon` rows of floats in physical units. No files, no `/static`. |
 | Auth | Bearer keys from `.env` (`*_API_KEYS`). `/health` and `/v1/models` are unauthenticated. |
-| Concurrency | One forward pass at a time via a process-wide `asyncio.Lock` in `server/inference.py`. Throughput comes from replicas (`*_REPLICAS`, one process per GPU), not from concurrent calls. A queue, batching across clients, or a WebSocket stream is out of scope. |
+| Concurrency | One forward pass at a time via a process-wide `asyncio.Lock` in `server/inference.py`, always on one dedicated thread (`on_gpu_thread`). Throughput comes from replicas (`*_REPLICAS`, one process per GPU), not from concurrent calls. A queue, batching across clients, or a WebSocket stream is out of scope. |
 | Rate limit | `slowapi`, per key, sized to the model's control rate (hundreds per minute — not the `2/minute` of the media servers this shell came from). |
 | Safety | Non-finite state is rejected with 400; a non-finite action is a 500 and nothing is returned. |
 | Weight storage | `HF_HOME` = `weights/.cache` under the project, set by pixi's activation env. Never `$HOME` on a cluster. |
 | Exposure | `~/.tailscale-bfaq-authkey` (hardcoded path, shared across servers). Funnel publishes `:443`, `:8443`, `:10000`, hence at most 3 replicas. `*_FUNNEL=0` serves on `127.0.0.1` only. |
-| Lifespan | Load at startup, one warmup call, serve until the allocation dies. `/health` answers only after warmup. |
+| Lifespan | Load and warm up at startup **on the GPU thread**, serve until the allocation dies. `/health` answers only after warmup. |
 
 ### What is model-agnostic and what is not
 
@@ -42,6 +42,13 @@ stamped from it with `bash scripts/new_server.sh <name>`.
 `predict`, `reset`, `shutdown_policy`. `predict` receives numpy arrays already
 validated against the spec: video `(T, H, W, 3)` uint8 RGB, state `(T, D)`
 float32. It raises `ValueError` for a bad request (→ 400).
+
+Everything that touches the model — load, warmup, every forward pass, reset —
+goes through `inference.on_gpu_thread`. cuDNN handles and compiled-graph state
+are per thread: with `asyncio.to_thread` a request can land on a pool worker
+that has never run the model and pay the cold start again (measured on Cosmos
+3 Edge: 3.9 s instead of 0.4 s, on a few requests after startup). Do not call
+the model through `asyncio.to_thread` or a second executor.
 
 ### Environments: pixi + uv, two modes
 
@@ -115,8 +122,17 @@ not gated) through cosmos-framework's `RobolabPolicyService`. Upstream mode,
 **Job:** DROID only. Three cameras (`wrist_image_left`,
 `exterior_image_1_left`, `exterior_image_2_left`), state `joint_position` (7)
 + `gripper_position` (1), returns a 32-step chunk of the same two keys at
-15 Hz. About a second per call on an H100 — a different latency class from
-GR00T, and the rate limit reflects it.
+15 Hz. ~0.4 s per call on an RTX 5090 at the default settings — a different
+latency class from GR00T, and the rate limit reflects it. The measured table
+and every latency knob are in `docs/run.md`.
+
+**Latency settings come in two kinds, keep them apart.** Execution settings
+(`COSMOS_EDGE_GUIDANCE_INTERVAL` — upstream's own Edge recipe —
+`GPU_PREPROCESS`, `USE_TORCH_COMPILE`) are on by default. Workload settings
+(`NUM_STEPS`, `GUIDANCE`, `RESOLUTION` + `IMAGE_HEIGHT`/`IMAGE_WIDTH`,
+`ACTION_CHUNK_SIZE`) change what the model computes; they reach ~76 ms but
+their task success is unvalidated, so the defaults stay upstream's. Weights
+are bf16 and nothing is quantized.
 
 **Design choice — wrap upstream's service, not the diffusers pipeline.** The
 checkpoint also loads as diffusers `Cosmos3OmniPipeline` (policy mode), but
@@ -133,7 +149,10 @@ inversion). The model also denoises a video rollout on every call;
 **Do not:** point it at `nvidia/Cosmos3-Edge` (base world model, no DROID
 policy); switch to the diffusers pipeline to "simplify"; accept a non
 `joint_pos` action space (load asserts it); import `cosmos_framework` at module
-top level (its import has side effects and breaks the CPU tests).
+top level (its import has side effects and breaks the CPU tests); quantize
+(FP8 / int8 / NVFP4) to buy latency; change a workload default without an eval
+result; turn on `USE_CUDA_GRAPHS`, `PREFILL_TEXT_KV` or `BATCHED_CFG` without
+re-measuring (all three were tried and fail or lose on this checkpoint).
 
 ---
 

@@ -20,9 +20,24 @@ import httpx
 from PIL import Image
 
 
+# Different lengths on purpose: a compiled model can stall the first time the
+# prompt length changes, and a smoke that repeats one sentence never sees it.
+INSTRUCTIONS = (
+    "pick up the block",
+    "close the top drawer",
+    "put the banana in the bowl and then move the bowl to the left side of the table",
+    "wipe the table",
+    "stack the green cube on top of the yellow cube without touching the red one",
+)
+
+
 def _frame(width: int, height: int) -> bytes:
+    # A flat gray frame compresses to ~2 KB and decodes in microseconds, which
+    # hides the real upload + decode cost. Blurred noise lands near a real
+    # camera frame's JPEG size.
+    noise = Image.effect_noise((width, height), 64).convert("RGB")
     buf = io.BytesIO()
-    Image.new("RGB", (width, height), color=(127, 127, 127)).save(buf, format="JPEG")
+    noise.save(buf, format="JPEG", quality=85)
     return buf.getvalue()
 
 
@@ -63,7 +78,8 @@ def main() -> int:
     parser.add_argument("--url", default="http://127.0.0.1:8000")
     parser.add_argument("--key", default=None, help="default: first key in .env")
     parser.add_argument("-n", type=int, default=5, help="timed requests after one discarded warmup")
-    parser.add_argument("--instruction", default="pick up the block")
+    parser.add_argument("--instruction", default=None,
+                        help="default: cycle through instructions of different lengths")
     parser.add_argument("--width", type=int, default=640)
     parser.add_argument("--height", type=int, default=480)
     args = parser.parse_args()
@@ -83,9 +99,10 @@ def main() -> int:
         policy = model["policy"]
         print(f"[smoke] {model['id']}: {json.dumps(policy)}")
 
-        latencies, server_ms = [], []
+        latencies, server_ms, parse_ms = [], [], []
         for i in range(args.n + 1):
-            data, files = build_request(policy, args.instruction, args.width, args.height)
+            instruction = args.instruction or INSTRUCTIONS[i % len(INSTRUCTIONS)]
+            data, files = build_request(policy, instruction, args.width, args.height)
             start = time.perf_counter()
             response = client.post("/v1/actions/generations", data=data, files=files)
             elapsed = (time.perf_counter() - start) * 1000.0
@@ -100,12 +117,14 @@ def main() -> int:
             if i > 0:
                 latencies.append(elapsed)
                 server_ms.append(body["timing_ms"].get("inference", 0.0))
+                parse_ms.append(body["timing_ms"].get("parse", 0.0))
 
     if latencies:
         latencies.sort()
         p90 = latencies[min(len(latencies) - 1, int(0.9 * len(latencies)))]
         print(f"[smoke] OK: {len(latencies)} requests, end-to-end p50={statistics.median(latencies):.1f}ms "
-              f"p90={p90:.1f}ms, server inference p50={statistics.median(server_ms):.1f}ms")
+              f"p90={p90:.1f}ms max={latencies[-1]:.1f}ms | server: parse p50={statistics.median(parse_ms):.1f}ms, "
+              f"inference p50={statistics.median(server_ms):.1f}ms")
     else:
         print("[smoke] OK")
     return 0

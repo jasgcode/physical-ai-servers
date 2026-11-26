@@ -8,6 +8,7 @@ particular robot is hardcoded here.
 import asyncio
 import logging
 import time
+from concurrent.futures import ThreadPoolExecutor
 
 import numpy as np
 
@@ -22,6 +23,16 @@ _spec: PolicySpec | None = None
 # One forward pass at a time per process. More throughput = more replicas
 # (scripts/launch.sh), not concurrent calls into one model.
 _lock = asyncio.Lock()
+
+# Load, warmup and every forward pass run on this one thread. cuDNN handles and
+# compiled-graph state are per thread, so a call landing on a fresh worker pays
+# the cold start again (measured on Cosmos 3 Edge: 3.9 s instead of 0.4 s), and
+# asyncio.to_thread hands work to whichever pool worker happens to be free.
+_gpu_thread = ThreadPoolExecutor(max_workers=1, thread_name_prefix="gpu")
+
+
+async def on_gpu_thread(fn, *args):
+    return await asyncio.get_running_loop().run_in_executor(_gpu_thread, fn, *args)
 
 
 def _state_dims(policy, keys: list[str]) -> dict[str, int | None]:
@@ -139,7 +150,7 @@ async def predict(obs: Observation) -> tuple[dict[str, np.ndarray], dict[str, fl
     queued = time.perf_counter()
     async with _lock:
         started = time.perf_counter()
-        actions = await asyncio.to_thread(_predict_sync, obs)
+        actions = await on_gpu_thread(_predict_sync, obs)
         done = time.perf_counter()
     return actions, {
         "queue": (started - queued) * 1000.0,
@@ -153,7 +164,7 @@ async def reset() -> None:
     if _policy is None:
         return
     async with _lock:
-        await asyncio.to_thread(_policy.reset)
+        await on_gpu_thread(_policy.reset)
 
 
 def shutdown_policy() -> None:

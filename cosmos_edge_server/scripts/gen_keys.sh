@@ -14,4 +14,4 @@ done
 joined=$(IFS=,; echo "${keys[*]}")
 
 echo "COSMOS_EDGE_API_KEYS=$joined"
-echo "COSMOS_EDGE_RATE_LIMIT=120/minute"
+echo "COSMOS_EDGE_RATE_LIMIT=300/minute"
