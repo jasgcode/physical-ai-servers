@@ -2,7 +2,8 @@
 
 One inference server per robot foundation model. Each takes an observation
 (camera frames, robot state, a language instruction) and returns an **action
-chunk**. They share an HTTP/auth/exposure shell and diverge on **which model is
+chunk** — except `inkling_server`, a vision-language chat model served next to
+them (see its section). They share an HTTP/auth/exposure shell and diverge on **which model is
 loaded and how its environment is built**. Treat each subdirectory as its own
 project; do not merge them, and do not factor the shell into a shared package.
 
@@ -156,12 +157,42 @@ re-measuring (all three were tried and fail or lose on this checkpoint).
 
 ---
 
+## `inkling_server` — Inkling 2 Mini, chat + vision, one GPU
+
+**Model:** `thinkingmachines/Inkling-2-Mini` (26.4B MoE, 3.4B active, ~20 GB,
+Apache 2.0). Text + images in, text out. **Not a policy**: no action head, so
+`/v1/actions/*` return 501. In a robot stack it is the planner or scene
+reasoner above a policy server.
+
+**Design choice — vLLM as a private child process, the shell in front.** The
+checkpoint ships mixed NVFP4/MXFP8 with looped MoE layers, a DSpark draft head
+(`mtp.safetensors`) and its own reasoning parser; vLLM's OpenAI server is the
+supported path. `init_policy()` starts `vllm serve` on `127.0.0.1:$INKLING_ENGINE_PORT`
+in its own process group and blocks on its `/health`; `routes/chat.py` proxies
+`POST /v1/chat/completions` (JSON and SSE) with bearer keys and rate limit,
+rewriting `model` to the served name. This is the one server that diverges
+from the action shell: no `observation.py`/`schemas.py`, no `asyncio.Lock`
+and no GPU thread — vLLM batches concurrent requests itself (`MAX_NUM_SEQS`).
+
+**Env:** PyPI mode, Python 3.12. `pyproject.toml` pins a vLLM nightly by
+commit (`wheels.vllm.ai/<commit>`) and takes torch/torchcodec from the CUDA
+13.0 index; torchvision/torchaudio come from PyPI. `tool.uv.environments` is
+linux x86_64 only. `INKLING_MODEL` may be a local snapshot directory, which is
+served with `HF_HUB_OFFLINE=1`.
+
+**Do not:** expose the engine port or give it its own key; import vllm in
+`server/` (tests must stay CPU-only); add a lock around the proxy; requantize
+the checkpoint (it already ships in its released precision); fake an action
+route on top of text output.
+
+---
+
 ## Agent conventions
 
 - Change the **model** in that server's `server/inference.py` and
   `server/config.py`. A change to a shell file is a change to every server:
   make it in `template_server/` and port it to the others in the same commit.
-- Prefix env vars with the server name (`GROOT_`, `COSMOS_EDGE_`). Do not share
+- Prefix env vars with the server name (`GROOT_`, `COSMOS_EDGE_`, `INKLING_`). Do not share
   `.env` files across servers.
 - Comments explain *why*. Do not add narration comments.
 - Use `pixi run <task>`; do not call bare `python`/`uvicorn`.

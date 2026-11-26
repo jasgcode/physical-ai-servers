@@ -1,0 +1,52 @@
+[project]
+name = "inkling-server"
+version = "0.1.0"
+requires-python = "==3.12.*"
+dependencies = [
+    "pillow",
+    "pydantic-settings",
+    "fastapi",
+    "uvicorn[standard]",
+    "slowapi",
+    "httpx",
+    # Pinned to the nightly that ships the Inkling 2 Mini model, the "inkling"
+    # reasoning parser and DSpark speculative decoding. Bump deliberately.
+    "vllm==0.34.1rc1.dev143+ge7f220fdf",
+    "torch==2.14.0",
+    "torchvision",
+    "torchaudio",
+    "torchcodec",
+]
+
+[dependency-groups]
+dev = ["pytest"]
+
+[tool.uv]
+# Nightly vLLM carries a local version label; uv must accept it.
+prerelease = "allow"
+# Same platform as pixi.toml. Resolving for every arch fails: the cu130 index
+# has no torchaudio for s390x and friends.
+environments = ["sys_platform == 'linux' and platform_machine == 'x86_64'"]
+
+[tool.uv.sources]
+vllm = { index = "vllm-nightly" }
+# Only these two carry CUDA builds; the torchvision/torchaudio versions vLLM
+# pins are published on PyPI only.
+torch = { index = "pytorch-cu130" }
+torchcodec = { index = "pytorch-cu130" }
+
+[[tool.uv.index]]
+name = "vllm-nightly"
+url = "https://wheels.vllm.ai/e7f220fdfaf71bb85d8c4bb833070101e9a6ced6"
+explicit = true
+
+[[tool.uv.index]]
+# The vLLM nightly is built against CUDA 13.0 torch (also what Blackwell
+# sm_120 needs).
+name = "pytorch-cu130"
+url = "https://download.pytorch.org/whl/cu130"
+explicit = true
+
+[tool.pytest.ini_options]
+pythonpath = ["."]
+testpaths = ["tests"]
